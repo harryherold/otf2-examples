@@ -41,27 +41,20 @@ GlobDefLocation_Register( void*                 userData,
                           uint64_t              numberOfEvents,
                           OTF2_LocationGroupRef locationGroup );
 
-class Worker
+class LocalReader
 {
 public:
-    ~Worker()
+    ~LocalReader()
     {
         if(nevents > 0)
         {
-            std::cout << "Read " << nevents << '\n';
+            std::cout << "Read " << nevents << "Events.\n";
         }
     }
 
-    void
-    operator() (OTF2_Reader* reader, std::vector<size_t> locations)
+    inline void
+    read_definitions(OTF2_Reader* reader, const std::vector<size_t> & locations)
     {
-        uint64_t number_of_locations_to_read = 0;
-        for (auto location: locations)
-        {
-            number_of_locations_to_read++;
-            OTF2_Reader_SelectLocation( reader, location );
-        }
-
         bool successful_open_def_files = OTF2_Reader_OpenDefFiles( reader ) == OTF2_SUCCESS;
 
         for (auto location: locations)
@@ -82,44 +75,62 @@ public:
             OTF2_EvtReader* evt_reader =
                 OTF2_Reader_GetEvtReader( reader, location );
         }
-
         if ( successful_open_def_files )
         {
             OTF2_Reader_CloseDefFiles( reader );
         }
+    }
 
+    inline void
+    read_events(OTF2_Reader* reader, const std::vector<size_t> & locations)
+    {
         OTF2_Reader_OpenEvtFiles( reader );
+
+        OTF2_EvtReaderCallbacks* evt_callbacks = OTF2_EvtReaderCallbacks_New();
+
+        OTF2_EvtReaderCallbacks_SetEnterCallback(evt_callbacks,
+                                                    local_enter_cb);
+
+        OTF2_EvtReaderCallbacks_SetLeaveCallback(evt_callbacks,
+                                                    local_leave_cb);
+
+        for (auto location: locations)
+        {
+            OTF2_EvtReader *  evt_reader = OTF2_Reader_GetEvtReader( reader, location);
+            OTF2_Reader_RegisterEvtCallbacks(reader,
+                                                evt_reader,
+                                                evt_callbacks,
+                                                this);
+
+            uint64_t events_read;
+            OTF2_Reader_ReadAllLocalEvents(reader,
+                                            evt_reader,
+                                            &events_read);
+
+            OTF2_Reader_CloseEvtReader(reader,
+                                        evt_reader);
+        }
+        OTF2_EvtReaderCallbacks_Delete( evt_callbacks );
+        OTF2_Reader_CloseEvtFiles( reader );
+    }
+
+    void
+    operator() (OTF2_Reader* reader, std::vector<size_t> locations)
+    {
+        uint64_t number_of_locations_to_read = 0;
+        for (auto location: locations)
+        {
+            number_of_locations_to_read++;
+            OTF2_Reader_SelectLocation( reader, location );
+        }
 
         if ( number_of_locations_to_read > 0 )
         {
-            OTF2_EvtReaderCallbacks* evt_callbacks = OTF2_EvtReaderCallbacks_New();
-
-            OTF2_EvtReaderCallbacks_SetEnterCallback(evt_callbacks,
-                                                     local_enter_cb);
-
-            OTF2_EvtReaderCallbacks_SetLeaveCallback(evt_callbacks,
-                                                     local_leave_cb);
-
-            for (auto location: locations)
-            {
-                OTF2_EvtReader *  evt_reader = OTF2_Reader_GetEvtReader( reader, location);
-                OTF2_Reader_RegisterEvtCallbacks(reader,
-                                                 evt_reader,
-                                                 evt_callbacks,
-                                                 this);
-
-                uint64_t events_read;
-                OTF2_Reader_ReadAllLocalEvents(reader,
-                                               evt_reader,
-                                               &events_read);
-
-                OTF2_Reader_CloseEvtReader(reader,
-                                           evt_reader);
-            }
-            OTF2_EvtReaderCallbacks_Delete( evt_callbacks );
+            read_definitions(reader, locations);
+            read_events(reader, locations);
         }
-        OTF2_Reader_CloseEvtFiles( reader );
     }
+
     unsigned long int nevents = 0;
 };
 
@@ -182,7 +193,7 @@ public:
         for(int i = 0; i < thread_location_count.size(); i++)
         {
             auto thread_locations = std::vector<size_t>(src_begin, src_begin + thread_location_count[i]);
-            workers.emplace_back(Worker(), m_reader, thread_locations);
+            workers.emplace_back(LocalReader(), m_reader, thread_locations);
             src_begin += thread_location_count[i];
         }
         for(auto & w: workers)
@@ -225,7 +236,7 @@ local_enter_cb( OTF2_LocationRef    location,
                 OTF2_AttributeList* attributeList,
                 OTF2_RegionRef      region )
 {
-    Worker * worker = static_cast<Worker *>(userData);
+    LocalReader * worker = static_cast<LocalReader *>(userData);
     worker->nevents++;
 
     return OTF2_CALLBACK_SUCCESS;
@@ -238,7 +249,7 @@ local_leave_cb( OTF2_LocationRef    location,
                 OTF2_AttributeList* attributeList,
                 OTF2_RegionRef      region )
 {
-    Worker * worker = static_cast<Worker *>(userData);
+    LocalReader * worker = static_cast<LocalReader *>(userData);
     worker->nevents++;
 
     return OTF2_CALLBACK_SUCCESS;

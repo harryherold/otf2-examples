@@ -1,9 +1,10 @@
+#include "otf2/OTF2_GeneralDefinitions.h"
 #include "otf2/OTF2_Reader.h"
 #include <cstddef>
 extern "C"
 {
     #include <otf2/otf2.h>
-    #include <omp.h>
+    #include <pthread.h>
 }
 
 #include <vector>
@@ -17,18 +18,20 @@ extern "C"
 #include <iostream>
 
 OTF2_CallbackCode
-Enter_print( OTF2_LocationRef    location,
-             OTF2_TimeStamp      time,
-             void*               userData,
-             OTF2_AttributeList* attributes,
-             OTF2_RegionRef      region );
+local_enter_cb( OTF2_LocationRef    location,
+                OTF2_TimeStamp      time,
+                uint64_t            eventPosition,
+                void*               userData,
+                OTF2_AttributeList* attributeList,
+                OTF2_RegionRef      region );
 
 OTF2_CallbackCode
-Leave_print( OTF2_LocationRef    location,
-             OTF2_TimeStamp      time,
-             void*               userData,
-             OTF2_AttributeList* attributes,
-             OTF2_RegionRef      region );
+local_leave_cb( OTF2_LocationRef    location,
+                OTF2_TimeStamp      time,
+                uint64_t            eventPosition,
+                void*               userData,
+                OTF2_AttributeList* attributeList,
+                OTF2_RegionRef      region );
 
 OTF2_CallbackCode
 GlobDefLocation_Register( void*                 userData,
@@ -41,6 +44,14 @@ GlobDefLocation_Register( void*                 userData,
 class Worker
 {
 public:
+    ~Worker()
+    {
+        if(nevents > 0)
+        {
+            std::cout << "Read " << nevents << '\n';
+        }
+    }
+
     void
     operator() (OTF2_Reader* reader, std::vector<size_t> locations)
     {
@@ -52,7 +63,6 @@ public:
         }
 
         bool successful_open_def_files = OTF2_Reader_OpenDefFiles( reader ) == OTF2_SUCCESS;
-        OTF2_Reader_OpenEvtFiles( reader );
 
         for (auto location: locations)
         {
@@ -69,42 +79,48 @@ public:
                     OTF2_Reader_CloseDefReader( reader, def_reader );
                 }
             }
-            // std::cout << "Thread " << std::this_thread::get_id() << " " << location << '\n';
             OTF2_EvtReader* evt_reader =
                 OTF2_Reader_GetEvtReader( reader, location );
         }
-        // return;
+
         if ( successful_open_def_files )
         {
             OTF2_Reader_CloseDefFiles( reader );
         }
 
+        OTF2_Reader_OpenEvtFiles( reader );
+
         if ( number_of_locations_to_read > 0 )
         {
-            OTF2_GlobalEvtReader* global_evt_reader = OTF2_Reader_GetGlobalEvtReader( reader );
+            OTF2_EvtReaderCallbacks* evt_callbacks = OTF2_EvtReaderCallbacks_New();
 
-            OTF2_GlobalEvtReaderCallbacks* event_callbacks = OTF2_GlobalEvtReaderCallbacks_New();
+            OTF2_EvtReaderCallbacks_SetEnterCallback(evt_callbacks,
+                                                     local_enter_cb);
 
-            OTF2_GlobalEvtReaderCallbacks_SetEnterCallback( event_callbacks,
-                                                            &Enter_print );
-            OTF2_GlobalEvtReaderCallbacks_SetLeaveCallback( event_callbacks,
-                                                            &Leave_print );
-            OTF2_Reader_RegisterGlobalEvtCallbacks( reader,
-                                                    global_evt_reader,
-                                                    event_callbacks,
-                                                    NULL );
+            OTF2_EvtReaderCallbacks_SetLeaveCallback(evt_callbacks,
+                                                     local_leave_cb);
 
-            OTF2_GlobalEvtReaderCallbacks_Delete( event_callbacks );
-            uint64_t events_read = 0;
-            OTF2_Reader_ReadAllGlobalEvents( reader,
-                                             global_evt_reader,
-                                             &events_read );
+            for (auto location: locations)
+            {
+                OTF2_EvtReader *  evt_reader = OTF2_Reader_GetEvtReader( reader, location);
+                OTF2_Reader_RegisterEvtCallbacks(reader,
+                                                 evt_reader,
+                                                 evt_callbacks,
+                                                 this);
 
-            OTF2_Reader_CloseGlobalEvtReader( reader, global_evt_reader );
-            std::cout << "Thread " << std::this_thread::get_id() << " " << events_read << '\n';
+                uint64_t events_read;
+                OTF2_Reader_ReadAllLocalEvents(reader,
+                                               evt_reader,
+                                               &events_read);
+
+                OTF2_Reader_CloseEvtReader(reader,
+                                           evt_reader);
+            }
+            OTF2_EvtReaderCallbacks_Delete( evt_callbacks );
         }
         OTF2_Reader_CloseEvtFiles( reader );
     }
+    unsigned long int nevents = 0;
 };
 
 class Reader
@@ -140,6 +156,9 @@ public:
         OTF2_Reader_ReadAllGlobalDefinitions( m_reader,
                                             global_def_reader,
                                             &definitions_read );
+
+        OTF2_Reader_CloseGlobalDefReader( m_reader,
+                                          global_def_reader );
     }
     ~Reader()
     {
@@ -195,38 +214,39 @@ GlobDefLocation_Register( void*                 userData,
         return OTF2_CALLBACK_INTERRUPT;
     }
     locations.push_back(location);
-    std::cout << "loc " << location << '\n';
     return OTF2_CALLBACK_SUCCESS;
 }
 
 OTF2_CallbackCode
-Enter_print( OTF2_LocationRef    location,
-             OTF2_TimeStamp      time,
-             void*               userData,
-             OTF2_AttributeList* attributes,
-             OTF2_RegionRef      region )
+local_enter_cb( OTF2_LocationRef    location,
+                OTF2_TimeStamp      time,
+                uint64_t            eventPosition,
+                void*               userData,
+                OTF2_AttributeList* attributeList,
+                OTF2_RegionRef      region )
 {
-    // Worker * worker = static_cast<Worker *>(userData);
-    // worker->nevents++;
+    Worker * worker = static_cast<Worker *>(userData);
+    worker->nevents++;
 
     return OTF2_CALLBACK_SUCCESS;
 }
 OTF2_CallbackCode
-Leave_print( OTF2_LocationRef    location,
-             OTF2_TimeStamp      time,
-             void*               userData,
-             OTF2_AttributeList* attributes,
-             OTF2_RegionRef      region )
+local_leave_cb( OTF2_LocationRef    location,
+                OTF2_TimeStamp      time,
+                uint64_t            eventPosition,
+                void*               userData,
+                OTF2_AttributeList* attributeList,
+                OTF2_RegionRef      region )
 {
-    // Worker * worker = static_cast<Worker *>(userData);
-    // worker->nevents++;
+    Worker * worker = static_cast<Worker *>(userData);
+    worker->nevents++;
 
     return OTF2_CALLBACK_SUCCESS;
 }
 
 int main(int argc, char * argv[])
 {
-    Reader r(argv[1], 2);
+    Reader r(argv[1], std::stoul(argv[2]));
     r.read();
     return 0;
 }

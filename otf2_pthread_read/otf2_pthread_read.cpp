@@ -1,5 +1,32 @@
-#include "otf2/OTF2_GeneralDefinitions.h"
-#include "otf2/OTF2_Reader.h"
+/*
+ * This file is part of the Score-P software (http://www.score-p.org)
+ *
+ * Copyright (c) 2009-2013,
+ * RWTH Aachen University, Germany
+ *
+ * Copyright (c) 2009-2013,
+ * Gesellschaft fuer numerische Simulation mbH Braunschweig, Germany
+ *
+ * Copyright (c) 2009-2014,
+ * Technische Universitaet Dresden, Germany
+ *
+ * Copyright (c) 2009-2013,
+ * University of Oregon, Eugene, USA
+ *
+ * Copyright (c) 2009-2014,
+ * Forschungszentrum Juelich GmbH, Germany
+ *
+ * Copyright (c) 2009-2013,
+ * German Research School for Simulation Sciences GmbH, Juelich/Aachen, Germany
+ *
+ * Copyright (c) 2009-2013,
+ * Technische Universitaet Muenchen, Germany
+ *
+ * This software may be modified and distributed under the terms of
+ * a BSD-style license.  See the COPYING file in the package base
+ * directory for details.
+ *
+ */
 #include <cstddef>
 extern "C"
 {
@@ -41,6 +68,9 @@ GlobDefLocation_Register( void*                 userData,
                           uint64_t              numberOfEvents,
                           OTF2_LocationGroupRef locationGroup );
 
+ OTF2_CallbackCode
+ def_local_string (void *userData, OTF2_StringRef self, const char *string);
+
 class LocalReader
 {
 public:
@@ -48,7 +78,8 @@ public:
     {
         if(nevents > 0)
         {
-            std::cout << "Read " << nevents << "Events.\n";
+            std::cout << "Read " << nevents << " events.\n";
+            std::cout << "Read " << nstring_defs << " string defs.\n";
         }
     }
 
@@ -57,12 +88,16 @@ public:
     {
         bool successful_open_def_files = OTF2_Reader_OpenDefFiles( reader ) == OTF2_SUCCESS;
 
+        OTF2_DefReaderCallbacks* def_callbacks = OTF2_DefReaderCallbacks_New();
+
+        OTF2_DefReaderCallbacks_SetStringCallback(def_callbacks, def_local_string);
+
         for (auto location: locations)
         {
             if ( successful_open_def_files )
             {
-                OTF2_DefReader* def_reader =
-                    OTF2_Reader_GetDefReader( reader, location );
+                OTF2_DefReader* def_reader = OTF2_Reader_GetDefReader( reader, location );
+                OTF2_Reader_RegisterDefCallbacks(reader, def_reader, def_callbacks, this);
                 if ( def_reader )
                 {
                     uint64_t def_reads = 0;
@@ -72,8 +107,7 @@ public:
                     OTF2_Reader_CloseDefReader( reader, def_reader );
                 }
             }
-            OTF2_EvtReader* evt_reader =
-                OTF2_Reader_GetEvtReader( reader, location );
+            OTF2_EvtReader* evt_reader = OTF2_Reader_GetEvtReader( reader, location );
         }
         if ( successful_open_def_files )
         {
@@ -101,14 +135,16 @@ public:
                                                 evt_reader,
                                                 evt_callbacks,
                                                 this);
+            if(evt_reader)
+            {
+                uint64_t events_read;
+                OTF2_Reader_ReadAllLocalEvents(reader,
+                                                evt_reader,
+                                                &events_read);
 
-            uint64_t events_read;
-            OTF2_Reader_ReadAllLocalEvents(reader,
-                                            evt_reader,
-                                            &events_read);
-
-            OTF2_Reader_CloseEvtReader(reader,
-                                        evt_reader);
+                OTF2_Reader_CloseEvtReader(reader,
+                                            evt_reader);
+            }
         }
         OTF2_EvtReaderCallbacks_Delete( evt_callbacks );
         OTF2_Reader_CloseEvtFiles( reader );
@@ -132,6 +168,7 @@ public:
     }
 
     unsigned long int nevents = 0;
+    unsigned long int nstring_defs = 0;
 };
 
 class Reader
@@ -236,11 +273,13 @@ local_enter_cb( OTF2_LocationRef    location,
                 OTF2_AttributeList* attributeList,
                 OTF2_RegionRef      region )
 {
-    LocalReader * worker = static_cast<LocalReader *>(userData);
-    worker->nevents++;
-
+    if(auto * worker = static_cast<LocalReader *>(userData))
+    {
+        worker->nevents++;
+    }
     return OTF2_CALLBACK_SUCCESS;
 }
+
 OTF2_CallbackCode
 local_leave_cb( OTF2_LocationRef    location,
                 OTF2_TimeStamp      time,
@@ -249,9 +288,22 @@ local_leave_cb( OTF2_LocationRef    location,
                 OTF2_AttributeList* attributeList,
                 OTF2_RegionRef      region )
 {
-    LocalReader * worker = static_cast<LocalReader *>(userData);
-    worker->nevents++;
+    if(auto * worker = static_cast<LocalReader *>(userData))
+    {
+        worker->nevents++;
+    }
+    return OTF2_CALLBACK_SUCCESS;
+}
 
+OTF2_CallbackCode
+def_local_string (void *userData,
+                  OTF2_StringRef self,
+                  const char *string)
+{
+    if(auto * worker = static_cast<LocalReader *>(userData))
+    {
+        worker->nstring_defs++;
+    }
     return OTF2_CALLBACK_SUCCESS;
 }
 
